@@ -1,53 +1,62 @@
 ;;; debrief-persist.el --- Debrief persistence functions -*- lexical-binding: t; -*-
 ;;
+;; Copyright (C) 2025 Your Name
+;;
+;; This file is not part of GNU Emacs.
+
 ;;; Commentary:
 ;;
 ;; This module handles the persistence of the Debrief debugging framework's
-;; configuration state across Emacs sessions. It allows users to save their
-;; current debugging setup and restore it later, ensuring a consistent
-;; debugging environment.
+;; configuration state. It provides functions to:
 ;;
-;; Core Functionality:
+;; - **Save State**: Write the current global debug settings, logging
+;;   configurations, and all registered debug targets to a file
+;;   (`debrief-persist-file`). This allows the debug setup to be
+;;   restored across Emacs sessions.
+;; - **Load State**: Read the saved configuration from the persistence file
+;;   and re-apply it, effectively restoring the previous debugging environment.
+;;   Loaded state augments or overrides configurations from `debrief-debug-vars`.
+;; - **Reset All**: Clear all current configurations, remove the persistence
+;;   file, and revert Debrief to its default, unconfigured state.
 ;;
-;; - `debrief/save-state`: Writes the current global debug settings (like
-;;   `debrief-debug-enabled`, logging configurations) and all registered
-;;   debug target configurations to a specified file (`debrief-persist-file`).
-;;   It carefully excludes runtime-specific data (e.g., internal advice
-;;   lambdas, temporary flags) that should not be persisted.
-;;
-;; - `debrief/load-state`: Reads the saved configuration from the persistence
-;;   file. It first clears any existing in-memory Debrief configurations, then
-;;   evaluates the contents of the file to restore global settings and
-;;   re-registers each debug target. This effectively restores the previous
-;;   debugging environment.
-;;
-;; - `debrief/reset-all`: Provides a way to clear all current Debrief
-;;   configurations, remove the persistence file, and revert Debrief to its
-;;   default, unconfigured state. This is useful for starting fresh or if the
-;;   persisted state is suspected to be problematic.
-;;
-;; This module relies on `debrief-core.el` for accessing core data structures
-;; (like `debrief--debug-config`) and logging utilities.
+;; This module declares variables (like `debrief-persist-file`,
+;; `debrief--debug-config`, etc.) that are defined in `debrief-core.el` or
+;; `debrief-log.el` to manage dependencies.
 
 ;;; Code:
 
 (require 'cl-lib)
-(require 'dash)          ; For utility functions like --each, --reduce-from
-(require 'debrief-core)  ; For core variables and functions
-(require 'debrief-log)   ; For logging utilities
+(require 'dash)       ; For utility functions like --each, --reduce-from
+(require 'debrief-log)
 
-;; Declare functions used from other Debrief modules to satisfy byte-compiler.
+;; Declare variables and functions from other Debrief modules.
+;; These are defined in debrief-core.el or debrief-log.el.
+(defvar debrief-persist-file)
+(defvar debrief-debug-enabled)
+(defvar debrief-log-destination)
+(defvar debrief-log-dedicated-buffer-name)
+(defvar debrief-log-file-path)
+(defvar debrief-log-level-threshold)
+(defvar debrief-hook-monitor-enabled)
+(defvar debrief--active-monitored-hooks)
+(defvar debrief--debug-config)
+(defvar debrief--debug-groups)
+(defvar debrief--original-values)
+(defvar debrief--global-hook-monitor-advice-active-p)
+(defvar debrief--loaded-configs) ; Used temporarily during load
+
+(declare-function debrief-update-debug-vars "debrief-core" (enabled))
+(declare-function debrief--sanitize-entry-plist "debrief-core" (raw-plist))
+(declare-function debrief--register-debug-target "debrief-core"
+                  (target-symbol config-plist &optional save-state-p))
+(declare-function debrief--initialize-targets-from-custom-vars "debrief-core" ())
 (declare-function debrief/list-registered-targets "debrief-ui" ())
+(declare-function debrief-apply-entry-config "debrief-core" (config-entry))
+(declare-function debrief--ensure-global-hook-advice "debrief-core" (activate-p))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                         Persistence Functions                              ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defvar debrief--loaded-configs nil
-  "Temporary variable to hold configurations when `debrief-persist-file` is loaded.
-This variable is populated by `load-file` when the persistence file is evaluated.
-`debrief/load-state` then processes these configurations to re-register targets.
-It is cleared after loading to prevent unintended side effects or re-use.")
 
 ;;;###autoload
 (defun debrief/save-state ()
@@ -78,8 +87,6 @@ Return:
                         debrief-log-level-threshold))
         (insert (format "(setq debrief-hook-monitor-enabled %S)\n"
                         debrief-hook-monitor-enabled))
-        ;; Persist the list of hooks that were actively being monitored.
-        ;; On load, `debrief--ensure-global-hook-advice` will use this.
         (insert (format "(setq debrief--active-monitored-hooks %S)\n\n"
                         debrief--active-monitored-hooks))
 
@@ -127,11 +134,12 @@ Return:
 ;;;###autoload
 (defun debrief/load-state ()
   "Restore Debrief's configuration from `debrief-persist-file`.
-This function clears the current in-memory Debrief state, then loads and
-evaluates the persistence file. It re-registers all debug targets found in
-the file and re-applies the global debug settings.
+This function loads and evaluates the persistence file. It then re-registers
+all debug targets found in the file, which will update or augment any
+configurations already established (e.g., from `debrief-debug-vars`).
+Finally, it re-applies the global debug settings.
 If the persistence file does not exist, it logs an informational message
-and does nothing further.
+and does nothing further to the existing configurations.
 Return:
   nil. Side effect is modifying Debrief's internal state and applying settings."
   (interactive)
@@ -143,12 +151,14 @@ Return:
                   debrief-persist-file)
     (condition-case err
         (progn
-          ;; Clear current in-memory state before loading.
-          (ht-clear! debrief--debug-config)
-          (ht-clear! debrief--debug-groups)
-          (clrhash debrief--original-values) ; `clrhash` is for hash-table.el
+          ;; Do NOT clear `debrief--debug-config`, `debrief--debug-groups`,
+          ;; or `debrief--original-values` here. We want the loaded state
+          ;; to overlay the defaults from `debrief-debug-vars`.
+
+          ;; These are reset because the persist file will explicitly set them if saved.
           (setq debrief--active-monitored-hooks nil)
           (setq debrief--global-hook-monitor-advice-active-p nil)
+
           ;; The `debrief--loaded-configs` var will be set by `load-file`.
           (setq debrief--loaded-configs nil)
 
@@ -157,6 +167,8 @@ Return:
           (load-file debrief-persist-file)
 
           ;; Re-register debug targets from the loaded configurations.
+          ;; `debrief--register-debug-target` will update existing entries in
+          ;; `debrief--debug-config` or add new ones.
           (when debrief--loaded-configs
             (debrief--log :debug nil "Registering %d debug targets from saved state."
                           (length debrief--loaded-configs))
@@ -175,7 +187,8 @@ Return:
             (setq debrief--loaded-configs nil))
 
           ;; Re-apply global debug state and refresh all targets based on loaded settings.
-          ;; `debrief-update-debug-vars` will handle applying configs to all targets.
+          ;; `debrief-update-debug-vars` will handle applying configs to all targets
+          ;; using the `debrief-debug-enabled` value loaded from the persist file.
           (debrief-update-debug-vars debrief-debug-enabled)
           (debrief--log :info nil "Debrief configuration loaded successfully from %s."
                         debrief-persist-file))
@@ -213,8 +226,6 @@ Return:
         (when-let ((entry-plist (ht-get debrief--debug-config target-sym)))
           ;; To deactivate, we effectively tell `debrief-apply-entry-config`
           ;; that the entry is no longer active by simulating a disabled state.
-          ;; The actual `debrief--is-entry-active-p` will use the new global
-          ;; `debrief-debug-enabled` (which will be set to nil soon).
           (let ((debrief-debug-enabled nil)) ; Temporarily disable for this call
             (debrief-apply-entry-config entry-plist))))))
 
@@ -225,7 +236,8 @@ Return:
   (setq debrief--active-monitored-hooks nil)
   (setq debrief--global-hook-monitor-advice-active-p nil)
   ;; Ensure global hook advice is physically removed if it was active.
-  (debrief--ensure-global-hook-advice nil)
+  (when (fboundp 'debrief--ensure-global-hook-advice)
+    (debrief--ensure-global-hook-advice nil))
 
   ;; 3. Reset Debrief's custom variables to their `defcustom` default values.
   ;;    The `nil t` arguments to `custom-set-variables` achieve this.
@@ -243,7 +255,8 @@ Return:
   ;; 4. Re-initialize targets from the default `debrief-debug-vars` (from `debrief-core.el`).
   ;;    This will populate `debrief--debug-config` with defaults, but they will be
   ;;    inactive due to `debrief-debug-enabled` being nil.
-  (debrief--initialize-targets-from-custom-vars)
+  (when (fboundp 'debrief--initialize-targets-from-custom-vars)
+    (debrief--initialize-targets-from-custom-vars))
 
   ;; 5. Delete the persistence file if it exists.
   (when (file-exists-p debrief-persist-file)

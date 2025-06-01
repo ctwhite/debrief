@@ -32,6 +32,7 @@
 (require 'subr-x)      ; For if-let, when-let, etc.
 (require 'debrief-advice) ; For advice generation and management functions
 (require 'debrief-log)   ; For logging functionalities
+(require 'debrief-persist) ; For state persistence
 
 ;; Declare functions used from other Debrief modules.
 ;; These are forward declarations to satisfy the byte-compiler and indicate
@@ -1113,6 +1114,12 @@ hook advice state is correctly set."
   ;; for hook running functions is correctly activated or deactivated.
   (debrief--ensure-global-hook-advice t)
   (debrief--log :info nil "All Debrief targets refreshed."))
+
+(defun debrief--startup-sequence ()
+  (debrief--initialize-targets-from-custom-vars))
+  ;; (debrief/load-state))
+
+(debrief--startup-sequence)
 
 (provide 'debrief-core)
 ;;; debrief-core.el ends here

@@ -158,13 +158,13 @@ Return:
 
         (marginalia--fields
          (type-str :width 8 :face 'font-lock-type-face)
-         (group-name :width 10 :face 'font-lock-constant-face)
+         (group-name :width 8 :face 'font-lock-constant-face)
          (status-str :width 8)
          (minlog-str :width 8 :face 'font-lock-preprocessor-face)
          (watch-str :width 6)
          (break-str :width 6)
          (timing-str :width 7)
-         (val-str :width 20)
+         (val-str :width 8)
          (desc-str :width 0 :face 'font-lock-doc-face) ; Width 0 means take rest
          )))))
 

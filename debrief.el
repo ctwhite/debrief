@@ -34,24 +34,5 @@
 (when (featurep 'consult)
   (require 'debrief-consult))
 
-;; Add initialization functions to `emacs-startup-hook`.
-;; 1. Initialize from `debrief-debug-vars` (defaults/user config).
-;;    Priority 90 ensures it runs relatively late but before state loading.
-(add-hook 'emacs-startup-hook
-          (lambda ()
-            (when (fboundp 'debrief--initialize-targets-from-custom-vars)
-              (debrief--log :info nil "Startup: Initializing Debrief targets from `debrief-debug-vars`...")
-              (debrief--initialize-targets-from-custom-vars)))
-          90)
-
-;; 2. Load persisted state, potentially overriding/augmenting the above.
-;;    Priority 100 ensures it runs after the initial setup from custom vars.
-(add-hook 'emacs-startup-hook
-          (lambda ()
-            (when (fboundp 'debrief/load-state)
-              (debrief--log :info nil "Startup: Loading persisted Debrief state...")
-              (debrief/load-state)))
-          100)
-
 (provide 'debrief)
 ;;; debrief.el ends here
