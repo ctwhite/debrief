@@ -20,6 +20,7 @@
 (require 'cl-lib)
 (require 'dash)       ; For utility functions like --each
 (require 's)          ; For string manipulation
+(require 'ht)         ; For hash table operations
 
 ;; Declare variable from debrief-core.el that debrief--log needs to access.
 ;; It's defined and initialized in debrief-core.el.
@@ -202,7 +203,7 @@ Return:
             (unless (bolp) (insert "\n")) ; Ensure new message starts on a new line
             (insert message-string "\n")
             (when point-at-end (goto-char (point-max))) ; Restore point if it was at end
-            (run-hooks 'debrief-log-buffer-update-hook)))))))
+            (run-hooks 'debrief-log-buffer-update-hook))))))
   nil)
 
 ;;;###autoload
@@ -275,33 +276,40 @@ Return:
              debrief-log-level-threshold))
   nil)
 
-(defun debrief/log-filter-by-level (level)
+(defun debrief/log-filter-by-level (&optional level)
   "Filter logs in the Debrief Log buffer to show only messages at or above LEVEL.
-Prompts for LEVEL interactively if called directly. LEVEL should be one of
-:trace, :debug, :info, :warn, :error, :fatal.
-After setting the new threshold, logs are re-displayed from history.
-Arguments:
-  LEVEL (symbol): The log level keyword (e.g., 'info, 'debug).
-Return:
-  nil."
+
+LEVEL can be a symbol like 'info or a keyword like :info. Prompts if LEVEL is nil.
+Valid levels: :trace, :debug, :info, :warn, :error, :fatal."
   (interactive
-   (list (intern-soft ; Convert string input to keyword-like symbol
-          (completing-read "Filter log level (trace, debug, info, warn, error, fatal): "
-                           '("trace" "debug" "info" "warn" "error" "fatal")
-                           nil t nil 'debrief-log-filter-level-history
-                           (symbol-name debrief-log-level-threshold))))))
-  ;; Ensure level is a keyword
-  (unless (keywordp level) (setq level (intern (format ":%s" level))))
+   (list
+    (intern (concat ":" (completing-read
+                         "Filter log level (trace, debug, info, warn, error, fatal): "
+                         '("trace" "debug" "info" "warn" "error" "fatal")
+                         nil t nil 'debrief-log-filter-level-history
+                         (when (keywordp debrief-log-level-threshold)
+                           (substring (symbol-name debrief-log-level-threshold) 1)))))))
 
-  (unless (assoc level debrief--log-level-map)
-    (user-error "Invalid log level: %S. Choose from :trace, :debug, :info, :warn, :error, :fatal."
-                level))
+  (cl-block debrief/log-filter-by-level
+    ;; Ensure level is provided
+    (unless level
+      (cl-return-from debrief/log-filter-by-level
+        (user-error "No log level provided.")))
 
-  (setq debrief-log-level-threshold level) ; Set the global threshold
-  ;; Log using message directly to avoid issues if this function itself causes logs
-  (message "Debrief log display threshold set to %S. Re-displaying logs..." level)
-  (debrief/log-redisplay-filtered) ; Refresh the log buffer display
-  (message "Debrief log filtered to show %S and above." level))
+    ;; Normalize to keyword
+    (unless (keywordp level)
+      (setq level (intern (concat ":" (symbol-name level)))))
 
+    ;; Validate level
+    (unless (assoc level debrief--log-level-map)
+      (cl-return-from debrief/log-filter-by-level
+        (user-error "Invalid log level: %S. Choose from :trace, :debug, :info, :warn, :error, :fatal." level)))
+
+    ;; Apply filter and redisplay
+    (setq debrief-log-level-threshold level)
+    (message "Debrief log display threshold set to %S. Re-displaying logs..." level)
+    (debrief/log-redisplay-filtered)
+    (message "Debrief log filtered to show %S and above." level)))
+    
 (provide 'debrief-log)
 ;;; debrief-log.el ends here

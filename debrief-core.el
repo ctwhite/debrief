@@ -20,8 +20,8 @@
 ;; - Interfacing with `debrief-advice.el` for generating and applying advice,
 ;;   `debrief-log.el` for logging, and `debrief-persist.el` for saving/loading state.
 ;;
-;; This file forms the backbone of the Debrief system, coordinating the various
-;; debugging mechanisms.
+;; Initialization of targets from `debrief-debug-vars` is now triggered from
+;; `debrief.el` after all modules are loaded to prevent recursive load issues.
 
 ;;; Code:
 
@@ -109,6 +109,43 @@ It is bound to `t` when Debrief's internal advice wrappers or watcher functions
 are executing. This helps avoid infinite loops if, for example, a logging
 function itself is being debugged by Debrief, or if an `:if` predicate
 in a debug configuration calls a function that is also being debugged.")
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                    Core Logic & Initialization (Order Matters)             ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; This function needs to be defined before `debrief-hook-monitor-enabled`
+;; because the latter's :set function calls it.
+(defun debrief--ensure-global-hook-advice (activate-p)
+  "Activate or deactivate the global advice on hook-running functions.
+This function manages the advice placed on functions listed in
+`debrief--hook-running-functions`. The advice is only active if
+`debrief-hook-monitor-enabled` is true AND there are hooks in
+`debrief--active-monitored-hooks`.
+Arguments:
+  ACTIVATE-P (boolean): If non-nil, attempt to activate the advice if conditions
+                        are met. If nil, attempt to deactivate it."
+  (if activate-p
+      ;; Attempt to activate
+      (when (and debrief-hook-monitor-enabled          ; Global toggle must be on
+                 (not debrief--global-hook-monitor-advice-active-p) ; Not already active
+                 debrief--active-monitored-hooks)      ; At least one hook to monitor
+        (--each debrief--hook-running-functions
+          (lambda (fn)
+            (unless (advice-member-p 'debrief--global-hook-advice fn)
+              (advice-add fn :around #'debrief--global-hook-wrapper
+                          ;; Provide a name for the advice piece
+                          '(name . debrief--global-hook-advice)))))
+        (setq debrief--global-hook-monitor-advice-active-p t)
+        (debrief--log :info nil "Global hook monitor advice activated."))
+    ;; Attempt to deactivate
+    (when (and debrief--global-hook-monitor-advice-active-p ; Currently active
+               (or (not debrief-hook-monitor-enabled)    ; Global toggle off OR
+                   (null debrief--active-monitored-hooks))) ; No hooks to monitor
+      (--each debrief--hook-running-functions
+        (lambda (fn) (advice-remove fn 'debrief--global-hook-advice)))
+      (setq debrief--global-hook-monitor-advice-active-p nil)
+      (debrief--log :info nil "Global hook monitor advice deactivated."))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                    Error Handling                                          ;;
@@ -285,14 +322,18 @@ Return:
                          val target-symbol key
                          ;; Ensure `debrief--log-level-map` is accessible if needed here
                          ;; or use a static list of valid log level keywords.
-                         (mapcar #'car debrief--log-level-map) ; Get keys from map
+                         ;; Assuming debrief--log-level-map is defined in debrief-log.el
+                         ;; and debrief-log.el is required by debrief-core.el
+                         (if (boundp 'debrief--log-level-map)
+                             (mapcar #'car debrief--log-level-map)
+                           '(:trace :debug :info :warn :error :fatal :none))
                          nil))) ; No default, global threshold will be used
                  (_ ; Fallback for any other unhandled keys (e.g., :description)
                   (setq validated-val val))) ; Keep original value for these
                ;; Add to sanitized plist if validation didn't result in :skip
                ;; (or if it's a key we just copy, like :description)
                (unless (eq validated-val :skip)
-                 (setq sanitized-plist (plist-put sanitized-plist key validated-val))))))
+                 (setq sanitized-plist (plist-put sanitized-plist key validated-val)))))
     sanitized-plist))
 
 (defun debrief--determine-target-type (target-symbol config-entry)
@@ -321,6 +362,7 @@ Return:
        :variable)
       ((fboundp target-symbol) :function-advice) ; Function-bound -> function advice
       (t :variable)))) ; Default to variable if unsure (e.g., unbound symbol)
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                    Custom Variables                                        ;;
@@ -561,11 +603,7 @@ error occurred, and ERR (the error condition signaled)."
   "File path used by `debrief-persist.el` to save and load Debrief's
 active debug configuration states across Emacs sessions.")
 
-;; Logging-related defcustoms moved to `debrief-log.el`:
-;; - debrief-log-destination
-;; - debrief-log-file-path
-;; - debrief-log-dedicated-buffer-name
-;; - debrief-log-level-threshold
+;; Logging-related defcustoms are now in `debrief-log.el`.
 
 (defcustom debrief-hook-monitor-enabled t
   "Global toggle for enabling or disabling Emacs hook monitoring features.
@@ -576,42 +614,13 @@ quick way to turn off all hook monitoring overhead."
   :group 'debrief
   :set (lambda (symbol value) ; Custom setter to update global advice
          (set-default symbol value)
+         ;; This function is now defined before this defcustom.
          (debrief--ensure-global-hook-advice value)))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;                    Core Logic & Initialization                             ;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defun debrief--ensure-global-hook-advice (activate-p)
-  "Activate or deactivate the global advice on hook-running functions.
-This function manages the advice placed on functions listed in
-`debrief--hook-running-functions`. The advice is only active if
-`debrief-hook-monitor-enabled` is true AND there are hooks in
-`debrief--active-monitored-hooks`.
-Arguments:
-  ACTIVATE-P (boolean): If non-nil, attempt to activate the advice if conditions
-                        are met. If nil, attempt to deactivate it."
-  (if activate-p
-      ;; Attempt to activate
-      (when (and debrief-hook-monitor-enabled          ; Global toggle must be on
-                 (not debrief--global-hook-monitor-advice-active-p) ; Not already active
-                 debrief--active-monitored-hooks)      ; At least one hook to monitor
-        (--each debrief--hook-running-functions
-          (lambda (fn)
-            (unless (advice-member-p 'debrief--global-hook-advice fn)
-              (advice-add fn :around #'debrief--global-hook-wrapper
-                          ;; Provide a name for the advice piece
-                          '(name . debrief--global-hook-advice)))))
-        (setq debrief--global-hook-monitor-advice-active-p t)
-        (debrief--log :info nil "Global hook monitor advice activated."))
-    ;; Attempt to deactivate
-    (when (and debrief--global-hook-monitor-advice-active-p ; Currently active
-               (or (not debrief-hook-monitor-enabled)    ; Global toggle off OR
-                   (null debrief--active-monitored-hooks))) ; No hooks to monitor
-      (--each debrief--hook-running-functions
-        (lambda (fn) (advice-remove fn 'debrief--global-hook-advice)))
-      (setq debrief--global-hook-monitor-advice-active-p nil)
-      (debrief--log :info nil "Global hook monitor advice deactivated."))))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                    Remaining Core Logic                                    ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun debrief--is-entry-active-p (config-entry)
   "Return non-nil if the debug entry CONFIG-ENTRY should be considered active.
@@ -677,7 +686,7 @@ Arguments:
     (let* ((values-prop (plist-get config-entry :values))
            (watch-prop (plist-get config-entry :watch))
            (break-prop (plist-get config-entry :break-on-change))
-           (current-val (symbol-value target-symbol)))
+           (current-val (symbol-value target-symbol))) ; Get the value ONCE
       (if is-active
           ;; Activation logic
           (progn
@@ -733,7 +742,7 @@ Arguments:
                        (debrief--log :info target-symbol
                                      "Set %s to inactive value (no original stored): %S"
                                      target-symbol (symbol-value target-symbol))))
-                    ((booleanp (symbol-value current-val)) ; Check current type
+                    ((booleanp current-val) ; CORRECTED: Check the type of current-val
                      (set target-symbol nil)
                      (debrief--log :info target-symbol
                                    "Set boolean %s to inactive state (no original stored): nil"
@@ -962,7 +971,6 @@ Return:
                       "`debrief/save-state` function not found. State not persisted.")))
     target-symbol)) ; Return target symbol on success
 
-;;;###autoload
 (defmacro debrief-define-debug (target &rest plist)
   "Define and register a single debug TARGET with properties PLIST.
 This macro sanitizes the provided PLIST and registers the target with Debrief.
@@ -986,7 +994,6 @@ Example:
        (user-error "[Debrief] Invalid debug definition for %S. Raw plist: %S"
                    ',target raw-config-data))))
 
-;;;###autoload
 (defmacro debrief-define-debug-group (group-symbol &rest entries)
   "Define multiple debug targets, all associated with GROUP-SYMBOL.
 Each entry in ENTRIES is a list of the form (TARGET-SYMBOL &rest PLIST),
@@ -1019,7 +1026,9 @@ Example:
   "Initialize all debug targets from the `debrief-debug-vars` customizable list.
 This function clears existing Debrief configurations and re-populates them
 based on the current value of `debrief-debug-vars`. It's typically called
-during Debrief's startup or when `debrief-debug-vars` is changed."
+during Debrief's startup (via `debrief.el`) or when `debrief-debug-vars` is
+changed. This function should be called *after* all Debrief modules are loaded.
+It uses the anaphoric `it` from `dash.--each` to refer to each raw entry."
   (interactive) ; Allow manual re-initialization if needed
   ;; Clear existing internal state
   (ht-clear! debrief--debug-config)
@@ -1029,18 +1038,20 @@ during Debrief's startup or when `debrief-debug-vars` is changed."
   (debrief--ensure-global-hook-advice nil) ; Deactivate global hook advice first
 
   (debrief--log :info nil "Initializing all targets from `debrief-debug-vars`...")
+  (debrief--log :debug nil "Current value of debrief-debug-vars: %S" debrief-debug-vars)
   (--each debrief-debug-vars
-    (lambda (raw-entry-plist)
-      (if-let ((sanitized-entry (debrief--sanitize-entry-plist raw-entry-plist)))
-          (let ((target (plist-get sanitized-entry :target)))
-            ;; Ensure :enabled key exists, defaulting to t if not specified in var
-            (unless (plist-member sanitized-entry :enabled)
-              (setq sanitized-entry (plist-put sanitized-entry :enabled t)))
-            ;; Register without saving state for each; save once at the end if needed
-            (debrief--register-debug-target target sanitized-entry nil))
-        (debrief--log :error nil "Invalid entry in `debrief-debug-vars` (skipped): %S."
-                      raw-entry-plist))))
-  (debrief--log :info nil "Targets initialized from `debrief-debug-vars`.")
+    (debrief--log :debug nil "Processing entry: %S" it)
+    (if-let ((sanitized-entry (debrief--sanitize-entry-plist it))) ; `it` is current raw entry
+        (let ((target (plist-get sanitized-entry :target)))
+          ;; Ensure :enabled key exists, defaulting to t if not specified in var
+          (unless (plist-member sanitized-entry :enabled)
+            (setq sanitized-entry (plist-put sanitized-entry :enabled t)))
+          ;; Register without saving state for each; main save happens after full init
+          (debrief--register-debug-target target sanitized-entry nil))
+      (debrief--log :error nil "Invalid entry in `debrief-debug-vars` (skipped): %S."
+                    it))) ; `it` refers to the raw-entry-plist here
+  (debrief--log :info nil "Targets initialized from `debrief-debug-vars`. Config size: %d"
+                (ht-size debrief--debug-config))
   ;; After all targets are registered, ensure global hook advice state is correct
   (debrief--ensure-global-hook-advice t))
 
@@ -1052,35 +1063,27 @@ Return:
   (keyword): The keyword symbol (e.g., 'foo -> :foo)."
   (intern (format ":%s" (symbol-name sym))))
 
-;;;###autoload
 (defun debrief-update-debug-vars (enabled)
   "Enable or disable debugging globally, refreshing all registered debug entries.
 This function is typically called by the setter of `debrief-debug-enabled`.
-It sets the global `debrief-debug-enabled` state, re-applies configurations
-for all known targets, and persists the state.
+It sets the global `debrief-debug-enabled` state and re-applies configurations
+for all known targets by calling `debrief/refresh-all-targets`.
+It no longer attempts to initialize from `debrief-debug-vars` itself; that
+is handled by `debrief--initialize-targets-from-custom-vars` (called from
+`debrief.el`) and `debrief/load-state` (from `emacs-startup-hook`).
 Arguments:
   ENABLED (boolean): The new global enabled state for Debrief."
-  (debrief--log :debug nil "debrief-update-debug-vars: initial global enabled: %S, new value: %S"
+  (debrief--log :debug nil
+                "debrief-update-debug-vars: current global enabled: %S, new value: %S"
                 debrief-debug-enabled enabled)
   (setq debrief-debug-enabled enabled) ; Set the global state
   (debrief--log :info nil "Global debugging has been %s."
                 (if debrief-debug-enabled "ENABLED" "DISABLED"))
 
-  ;; If this is the first time (e.g., config hash is empty), ensure
-  ;; debrief-debug-vars are loaded into the config.
-  (when (and (zerop (ht-size debrief--debug-config)) debrief-debug-vars)
-    (debrief--log :info nil
-                  "Config empty, initializing from `debrief-debug-vars` during update.")
-    (--each debrief-debug-vars
-      (lambda (raw-entry-plist)
-        (if (plistp raw-entry-plist)
-            (when-let ((sane (debrief--sanitize-entry-plist raw-entry-plist)))
-              (when-let ((target (plist-get sane :target)))
-                ;; Register without saving state for each; save once at the end
-                (debrief--register-debug-target target sane nil)))
-          (debrief--log :error nil
-                        "Invalid non-plist entry in `debrief-debug-vars`: %S."
-                        raw-entry-plist)))))
+  ;; Primary initialization from debrief-debug-vars is handled by
+  ;; `debrief--initialize-targets-from-custom-vars` called from `debrief.el`,
+  ;; and persisted state is handled by `debrief/load-state`.
+  ;; This function now only refreshes based on the current `debrief--debug-config`.
 
   (debrief--log :info nil "Refreshing all %d registered targets due to global state change."
                 (ht-size debrief--debug-config))
@@ -1096,7 +1099,6 @@ Arguments:
         (debrief/list-registered-targets)
       (debrief--log :warn nil "`debrief/list-registered-targets` not found for UI refresh."))))
 
-;;;###autoload
 (defun debrief/refresh-all-targets ()
   "Re-evaluate and reapply all registered debug target configurations.
 This iterates through all targets in `debrief--debug-config` and calls
@@ -1111,15 +1113,6 @@ hook advice state is correctly set."
   ;; for hook running functions is correctly activated or deactivated.
   (debrief--ensure-global-hook-advice t)
   (debrief--log :info nil "All Debrief targets refreshed."))
-
-;; Initial processing of `debrief-debug-vars` and loading persisted state.
-;; This ensures that configurations defined by the user are loaded when
-;; `debrief-core.el` is loaded.
-(debrief--initialize-targets-from-custom-vars)
-
-;; Load persisted state after Emacs has fully started.
-;; The priority 100 ensures it runs fairly late in the startup sequence.
-(add-hook 'emacs-startup-hook #'debrief/load-state 100)
 
 (provide 'debrief-core)
 ;;; debrief-core.el ends here
