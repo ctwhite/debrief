@@ -21,9 +21,8 @@
 ;; - Register new function, variable, hook, and prefix targets.
 ;; - Perform temporary debugging actions on functions.
 ;; - Manage argument and return value filters for function advice.
-;; - Control the Debrief log buffer (clear, filter).
+;; - Control the Debrief log buffer (clear, filter, view).
 ;; - Save and load the Debrief configuration state.
-;; - Access a simple help screen for Debrief.
 
 ;;; Code:
 
@@ -32,10 +31,10 @@
 (require 'debrief-commands) ; For most action commands
 (require 'debrief-consult)  ; For debrief/consult-targets
 (require 'debrief-ui)       ; For debrief/list-registered-targets
-(require 'debrief-log)      ; For debrief-log-clear-buffer, etc.
+(require 'debrief-log)      ; For log-related defcustoms and functions
 (require 'debrief-persist)  ; For debrief/save-state, debrief/load-state
 
-;; Ensure functions are known at compile-time for transient definitions.
+;; Ensure functions and macros are known at compile-time for transient definitions.
 (eval-when-compile
   (require 'transient)
   (require 'debrief-core)
@@ -44,6 +43,12 @@
   (require 'debrief-ui)
   (require 'debrief-log)
   (require 'debrief-persist))
+
+;; Variables from debrief-log.el needed here
+(defvar debrief-log-destination)
+(defvar debrief-log-dedicated-buffer-name)
+(defvar debrief-log-file-path)
+(defvar debrief-debug-enabled) ; from debrief-core.el
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                            Internal State                                  ;;
@@ -89,29 +94,6 @@ Return:
         (debrief/toggle-group debrief--last-group))
     (message "No recent group available to toggle.")))
 
-(defun debrief/show-help ()
-  "Display a simple help buffer for the Debrief transient menu.
-The help buffer (`*Debrief Help*`) provides a brief overview and workflow tips.
-Return:
-  nil. Side effect is displaying the help buffer."
-  (interactive)
-  (with-help-window (help-buffer "*Debrief Help*")
-    (princ "Debrief Debugging Toolkit - Transient Menu Help\n\n" help-buffer)
-    (princ "This menu provides quick access to Debrief's features.\n\n" help-buffer)
-    (princ "Sections:\n" help-buffer)
-    (princ "  🔧 Global Control: Manage overall debugging state.\n" help-buffer)
-    (princ "  🎯 Target Management: Interact with specific debug targets and groups.\n" help-buffer)
-    (princ "  ➕ Register New Target: Define new functions, variables, etc., to debug.\n" help-buffer)
-    (princ "  ⚙️ Function Actions: Perform temporary debugging actions on functions.\n" help-buffer)
-    (princ "  📜 Logging: Manage the Debrief log buffer.\n" help-buffer)
-    (princ "  💾 Persistence: Save or load your Debrief configuration.\n\n" help-buffer)
-    (princ "Quick Workflow Example:\n" help-buffer)
-    (princ "  1. Register a target: e.g., 'f' for function, 'v' for variable.\n" help-buffer)
-    (princ "  2. Toggle its state: 'T' (target) or 'g' (group).\n" help-buffer)
-    (princ "  3. Inspect targets: 'l' (list) or 'c' (consult).\n" help-buffer)
-    (princ "  4. View logs: (Open log buffer via `debrief-log-destination` setting).\n" help-buffer)
-    (princ "  5. Save/Load state: 's' to save, 'o' to load.\n" help-buffer)))
-
 (defun debrief/reset-all-confirm ()
   "Ask for confirmation before resetting all Debrief configurations.
 If confirmed, calls `debrief/reset-all`.
@@ -123,6 +105,35 @@ Return:
         (debrief--log :warn nil "User confirmed reset of all Debrief configurations.")
         (debrief/reset-all))
     (message "Debrief reset cancelled.")))
+
+(defun debrief/view-log ()
+  "Open or switch to the current Debrief log destination.
+If destination is `:messages`, switches to the *Messages* buffer.
+If destination is `:buffer`, switches to the dedicated Debrief log buffer.
+If destination is `:file`, opens the configured log file.
+Return:
+  nil. Side effect is displaying a buffer or opening a file."
+  (interactive)
+  (pcase debrief-log-destination
+    (:messages
+     (switch-to-buffer "*Messages*")
+     (message "Switched to *Messages* buffer for Debrief logs."))
+    (:buffer
+     (let ((log-buf (get-buffer-create debrief-log-dedicated-buffer-name)))
+       (with-current-buffer log-buf
+         (unless (eq major-mode 'debrief-log-mode)
+           (debrief-log-mode))) ; Ensure mode is active
+       (pop-to-buffer log-buf))
+     (message "Switched to Debrief log buffer: %s" debrief-log-dedicated-buffer-name))
+    (:file
+     (if (and debrief-log-file-path (file-exists-p debrief-log-file-path))
+         (progn
+           (find-file debrief-log-file-path)
+           (message "Opened Debrief log file: %s" debrief-log-file-path))
+       (message "Debrief log file not found or path not set: %s"
+                (or debrief-log-file-path "Not configured"))))
+    (_
+     (message "Unknown Debrief log destination: %S" debrief-log-destination))))
 
 (defun debrief-log-next-entry ()
   "Move point to the next log entry in the `*Debrief Log*` buffer.
@@ -185,7 +196,6 @@ persistence, and global debug state."
     ("f" "function" debrief/register-function)
     ("v" "variable" debrief/register-variable)
     ("h" "hook monitor" debrief/register-hook-monitor)
-    ("p" "prefix (advise all matching)" debrief/register-prefix)
     ("w" "register & watch variable" debrief/watch-variable)
     ("b" "register & break on var change" debrief/break-on-variable-change)]
 
@@ -200,19 +210,16 @@ persistence, and global debug state."
 
    ;; Section: Logging (interacts with `debrief-log.el`)
    ["📜 Logging"
-    ("L" "clear log buffer" debrief-log-clear-buffer)
-    ("F" "filter log level" debrief-log-filter-by-level)
+    ("V" "view current log" debrief/view-log)
+    ("L" "clear log buffer" debrief/log-clear-buffer)
+    ("F" "filter log level" debrief/log-filter-by-level)
     ("n" "next log entry (in log buffer)" debrief-log-next-entry)
-    ("P" "previous log entry (in log buffer)" debrief-log-prev-entry)] ; Changed 'p' to 'P'
+    ("P" "previous log entry (in log buffer)" debrief-log-prev-entry)]
 
    ;; Section: Persistence (interacts with `debrief-persist.el`)
    ["💾 Persistence"
     ("s" "save state" debrief/save-state)
     ("o" "load state" debrief/load-state)]
-
-   ;; Section: Help
-   ["❓ Help"
-    ("?" "Debrief help" debrief/show-help)]
    ])
 
 (provide 'debrief-transient)
