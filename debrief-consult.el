@@ -139,9 +139,9 @@ Return:
                          (:variable "Var")
                          (_ "Unk")))
              (group-name (symbol-name (or (plist-get cfg :group) 'none)))
-             (status-str (if (debrief--is-entry-active-p cfg)
-                             (propertize "Active" 'face 'success)
-                           (propertize "Inactive" 'face 'warning)))
+            ;;  (status-str (if (debrief--is-entry-active-p cfg)
+            ;;                  (propertize "Active" 'face 'success)
+            ;;                (propertize "Inactive" 'face 'warning)))
              (minlog-val (plist-get cfg :min-log-level))
              (minlog-str (if minlog-val (symbol-name minlog-val) ""))
              (watch-val (plist-get cfg :watch))
@@ -158,13 +158,13 @@ Return:
 
         (marginalia--fields
          (type-str :width 8 :face 'font-lock-type-face)
-         (group-name :width 8 :face 'font-lock-constant-face)
-         (status-str :width 8)
+         (group-name :width 12 :face 'font-lock-constant-face)
+        ;;  (status-str :width 8)
+         (val-str :width 8)
          (minlog-str :width 8 :face 'font-lock-preprocessor-face)
          (watch-str :width 6)
          (break-str :width 6)
          (timing-str :width 7)
-         (val-str :width 8)
          (desc-str :width 0 :face 'font-lock-doc-face) ; Width 0 means take rest
          )))))
 

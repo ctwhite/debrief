@@ -468,19 +468,19 @@ This is a plist defining a single debug target."
     (:target after-load-hook :type :hook-monitor :enabled nil
      :description "Monitor `after-load-hook` for package loading times." :group 'init)
 
-    ;; Performance & Garbage Collection
+    ;; perf & Garbage Collection
     (:target gcmh-verbose :enabled t
      :description "Verbose GC management (if `gcmh` package is installed)."
-     :group 'performance)
+     :group 'perf)
     (:target gc-cons-threshold :enabled nil :values (16777216 800000)
      :description "Adjust GC threshold (smaller for more frequent GC for debugging)."
-     :group 'performance)
+     :group 'perf)
     (:target profiler-start :enabled nil :where :around :timing t
-     :description "Wrap `profiler-start` to log its calls." :group 'performance)
+     :description "Wrap `profiler-start` to log its calls." :group 'perf)
     (:target profiler-report :enabled nil :where :around :timing t
-     :description "Wrap `profiler-report` to log its calls." :group 'performance)
+     :description "Wrap `profiler-report` to log its calls." :group 'perf)
     (:target fill-column :enabled nil :watch t
-     :description "Watch 'fill-column' for changes." :group 'performance)
+     :description "Watch 'fill-column' for changes." :group 'perf)
 
     ;; UI & Minibuffer
     (:target vertico--exhibit :enabled t :where :around :timing t
@@ -935,42 +935,44 @@ Arguments:
                                    after registering/updating.
 Return:
   (symbol|nil): TARGET-SYMBOL on success, nil on failure (e.g., target mismatch)."
-  (let* ((plist-target (plist-get config-plist :target))
-         (group (plist-get config-plist :group))
-         ;; Ensure :enabled key exists, defaulting to t if not specified.
-         ;; This is a static default for the entry; runtime checks are separate.
-         (final-config (if (plist-member config-plist :enabled)
-                           (copy-sequence config-plist)
-                         (plist-put (copy-sequence config-plist) :enabled t))))
-    ;; Sanity check: target in plist should match the key symbol
-    (unless (eq plist-target target-symbol)
-      (debrief--log :error target-symbol
-                    "Target mismatch in registration: key '%s' vs plist :target '%s'. Config: %S"
-                    target-symbol plist-target config-plist)
-      (cl-return-from debrief--register-debug-target nil))
+  (cl-block debrief--register-debug-target
+    (let* ((plist-target (plist-get config-plist :target))
+          (group (plist-get config-plist :group))
+          ;; Ensure :enabled key exists, defaulting to t if not specified.
+          ;; This is a static default for the entry; runtime checks are separate.
+          (final-config (if (plist-member config-plist :enabled)
+                            (copy-sequence config-plist)
+                          (plist-put (copy-sequence config-plist) :enabled t))))
+      ;; Sanity check: target in plist should match the key symbol
+      (unless (eq plist-target target-symbol)
+        (debrief--log :error target-symbol
+                      "Target mismatch in registration: key '%s' vs plist :target '%s'. Config: %S"
+                      target-symbol plist-target config-plist)
+        (cl-return-from debrief--register-debug-target nil))
 
-    (ht-set! debrief--debug-config target-symbol final-config)
-    (debrief--log :debug target-symbol "Registered/Updated '%s'. Config: %S"
-                  target-symbol final-config)
-    ;; Manage group association
-    (when group
-      (unless (symbolp group) ; Ensure group is a symbol
-        (debrief--log :warn target-symbol
-                      "Invalid :group value %S for %s. Using 'default'."
-                      target-symbol group)
-        (setq group 'default))
-      (let ((targets-in-group (ht-get debrief--debug-groups group)))
-        (unless (memq target-symbol targets-in-group)
-          (ht-set! debrief--debug-groups group
-                   (cons target-symbol targets-in-group)))))
+      (ht-set! debrief--debug-config target-symbol final-config)
+      (debrief--log :debug target-symbol "Registered/Updated '%s'. Config: %S"
+                    target-symbol final-config)
+      ;; Manage group association
+      (when group
+        (unless (symbolp group) ; Ensure group is a symbol
+          (debrief--log :warn target-symbol
+                        "Invalid :group value %S for %s. Using 'default'."
+                        target-symbol group)
+          (setq group 'default))
+        (let ((targets-in-group (ht-get debrief--debug-groups group)))
+          (unless (memq target-symbol targets-in-group)
+            (ht-set! debrief--debug-groups group
+                    (cons target-symbol targets-in-group)))))
 
-    (debrief-apply-entry-config final-config) ; Apply the new/updated config
+      (debrief-apply-entry-config final-config) ; Apply the new/updated config
 
-    (when save-state-p
-      (if (fboundp 'debrief/save-state) (debrief/save-state)
-        (debrief--log :warn target-symbol
-                      "`debrief/save-state` function not found. State not persisted.")))
-    target-symbol)) ; Return target symbol on success
+      (when save-state-p
+        (if (fboundp 'debrief/save-state) 
+            (debrief/save-state)
+          (debrief--log :warn target-symbol
+                        "`debrief/save-state` function not found. State not persisted.")))
+      target-symbol))) ; Return target symbol on success
 
 (defmacro debrief-define-debug (target &rest plist)
   "Define and register a single debug TARGET with properties PLIST.
@@ -1116,8 +1118,11 @@ hook advice state is correctly set."
   (debrief--log :info nil "All Debrief targets refreshed."))
 
 (defun debrief--startup-sequence ()
-  (debrief--initialize-targets-from-custom-vars))
-  ;; (debrief/load-state))
+  "Run Debrief startup initialization."
+  (debrief--log :info nil "Startup: Initializing Debrief targets from `debrief-debug-vars`...")
+  (debrief--initialize-targets-from-custom-vars)
+  (debrief--log :info nil "Startup: Loading persisted Debrief state...")
+  (debrief/load-state))
 
 (debrief--startup-sequence)
 

@@ -27,7 +27,7 @@
 
 (require 'cl-lib)
 (require 'dash)       ; For utility functions like --each, --reduce-from
-(require 'debrief-log)
+;; (require 'debrief-core) ; Removed to break potential circular dependencies
 
 ;; Declare variables and functions from other Debrief modules.
 ;; These are defined in debrief-core.el or debrief-log.el.
@@ -45,6 +45,7 @@
 (defvar debrief--global-hook-monitor-advice-active-p)
 (defvar debrief--loaded-configs) ; Used temporarily during load
 
+(declare-function debrief--log "debrief-log" (level target-symbol format-string &rest args))
 (declare-function debrief-update-debug-vars "debrief-core" (enabled))
 (declare-function debrief--sanitize-entry-plist "debrief-core" (raw-plist))
 (declare-function debrief--register-debug-target "debrief-core"
@@ -53,6 +54,7 @@
 (declare-function debrief/list-registered-targets "debrief-ui" ())
 (declare-function debrief-apply-entry-config "debrief-core" (config-entry))
 (declare-function debrief--ensure-global-hook-advice "debrief-core" (activate-p))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                         Persistence Functions                              ;;
@@ -87,7 +89,8 @@ Return:
                         debrief-log-level-threshold))
         (insert (format "(setq debrief-hook-monitor-enabled %S)\n"
                         debrief-hook-monitor-enabled))
-        (insert (format "(setq debrief--active-monitored-hooks %S)\n\n"
+        ;; Persist the list of actively monitored hooks *as a quoted list*.
+        (insert (format "(setq debrief--active-monitored-hooks '%S)\n\n" ; Corrected
                         debrief--active-monitored-hooks))
 
         ;; Persist cleaned debug target configurations.
@@ -158,7 +161,6 @@ Return:
           ;; These are reset because the persist file will explicitly set them if saved.
           (setq debrief--active-monitored-hooks nil)
           (setq debrief--global-hook-monitor-advice-active-p nil)
-
           ;; The `debrief--loaded-configs` var will be set by `load-file`.
           (setq debrief--loaded-configs nil)
 
@@ -238,6 +240,7 @@ Return:
   ;; Ensure global hook advice is physically removed if it was active.
   (when (fboundp 'debrief--ensure-global-hook-advice)
     (debrief--ensure-global-hook-advice nil))
+
 
   ;; 3. Reset Debrief's custom variables to their `defcustom` default values.
   ;;    The `nil t` arguments to `custom-set-variables` achieve this.
