@@ -34,14 +34,5 @@
 (when (featurep 'consult)
   (require 'debrief-consult))
 
-;; (defun debrief--startup-sequence ()
-;;   "Run Debrief startup initialization."
-;;   (debrief--log :info nil "Startup: Initializing Debrief targets from `debrief-debug-vars`...")
-;;   (debrief--initialize-targets-from-custom-vars)
-;;   (debrief--log :info nil "Startup: Loading persisted Debrief state...")
-;;   (debrief/load-state))
-
-;; (add-hook 'emacs-startup-hook #'debrief--startup-sequence)
-
 (provide 'debrief)
 ;;; debrief.el ends here

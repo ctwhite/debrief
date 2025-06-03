@@ -80,7 +80,6 @@ Return:
 
         ;; Save global Debrief settings.
         (insert ";; Global Debrief Settings\n")
-        (insert (format "(setq debrief-debug-enabled %S)\n" debrief-debug-enabled))
         (insert (format "(setq debrief-log-destination %S)\n" debrief-log-destination))
         (insert (format "(setq debrief-log-dedicated-buffer-name %S)\n"
                         debrief-log-dedicated-buffer-name))
